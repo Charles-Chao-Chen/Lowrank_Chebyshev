@@ -6,9 +6,12 @@
 
 typedef Eigen::MatrixXd Matrix;
 typedef Eigen::VectorXd Vector;
+typedef double (*FUN1D)(double, double);
+typedef double (*FUN2D)(double, double,double, double);
 
 class Kernel {
 public:
+  
   Kernel() {};
   double operator() (const Vector &x, const Vector &y) const {
     //return (x-y).squaredNorm();
@@ -64,6 +67,23 @@ private:
 
 void Compute_lowrank_1d
 (const Kernel &K, 
+const Vector &X, double xmin, double xmax, 
+const Vector &Y, double ymin, double ymax,
+const int r, Matrix &U, Matrix &S, Matrix &V) {
+  
+  Interpolation Ix(xmin, xmax, r);
+  Interpolation Iy(ymin, ymax, r);
+  U = Ix.ComputeMatrix(X);
+  V = Iy.ComputeMatrix(Y);
+  Vector chebX = Ix.GetChebyshev();
+  Vector chebY = Iy.GetChebyshev();
+  for (int i=0; i<r; i++)
+    for (int j=0; j<r; j++)
+      S(i, j) = K( chebX(i), chebY(j) );
+}
+
+void Compute_lowrank_1d
+(FUN1D K, 
 const Vector &X, double xmin, double xmax, 
 const Vector &Y, double ymin, double ymax,
 const int r, Matrix &U, Matrix &S, Matrix &V) {
@@ -139,48 +159,70 @@ const int r, Matrix &U, Matrix &S, Matrix &V) {
       S(j, i) = K( chebA.row(j), chebB.row(i) );
 }
 
-/*
-K(x1, y1, x2, y2): kernel between (x1, y1) and (x2, y2)
-A[2 * n1]: coordinates of points in a cluster, A[0:n1-1] x coordinates, A[n1:2 *n1-1] y coordinates
-U: n1*r array, U n1 x r matrix , column major
-V: n2*r array, V n2 x r matrix , column major
-S: r x r matrix
-*/
 void Compute_lowrank
-(const Kernel &K, 
-int n1, double *A,
-int n2, double *B,
-int r, double *U, double *S, double *V) {
-  Matrix Amat = Eigen::Map<Matrix> (A, n1, 2);
-  Matrix Bmat = Eigen::Map<Matrix> (B, n2, 2);
+(FUN2D K, const Matrix &A, const Matrix &B,
+const int r, Matrix &U, Matrix &S, Matrix &V) {
 
-  int r2 = r * r;
-  Matrix Umat(n1, r2), Smat(r2, r2), Vmat(n2, r2);
-  Compute_lowrank(K, Amat, Bmat, r, Umat, Smat, Vmat);
+  Interpolation_2d IA(A.col(0).minCoeff(), A.col(1).minCoeff(),
+                      A.col(0).maxCoeff(), A.col(1).maxCoeff(), r);
+  Interpolation_2d IB(B.col(0).minCoeff(), B.col(1).minCoeff(),
+                      B.col(0).maxCoeff(), B.col(1).maxCoeff(), r);
 
-  // copy data to output
-  memcpy(U, Umat.data(), sizeof(double)*n1*r);
-  memcpy(S, Smat.data(), sizeof(double)*r2*r2);
-  memcpy(V, Vmat.data(), sizeof(double)*n2*r);
+  U = IA.ComputeMatrix(A);
+  V = IB.ComputeMatrix(B);
+
+  Matrix chebA = IA.GetChebyshev();
+  Matrix chebB = IB.GetChebyshev();
+
+  // std::cout << chebA << std::endl;
+  int r2 = r*r;
+  for (int i=0; i<r2; i++)
+    for (int j=0; j<r2; j++)
+      S(j, i) = K( chebA(j,0), chebA(j,1), chebB(i,0), chebB(i,1) );
 }
 
-/*
-K(x1, y1, x2, y2): kernel between (x1, y1) and (x2, y2)
-A[2 * n1]: coordinates of points in a cluster, A[0:n1-1] x coordinates, A[n1:2 *n1-1] y coordinates
-A_lo[2]: lower left corner of box
-A_hi[2]: upper right corner of box
-U: n1*r array, U n1 x r matrix , column major
-V: n2*r array, V n2 x r matrix , column major
-S: r x r matrix
-*/
-void Compute_lowrank
-(const Kernel &K, 
-int n1, double *A, double *A_lo, double *A_hi,
-int n2, double *B, double *B_lo, double *B_hi,
-int r, double *U, double *S, double *V) {
-  Matrix Amat = Eigen::Map<Matrix> (A, n1, 2);
-  Matrix Bmat = Eigen::Map<Matrix> (B, n1, 2);
-  //Compute_lowrank();
+/* Interface to Julia */
+
+extern "C" void bbfmm1D(FUN1D kfun, double*X, double*Y, double xmin, double xmax, double ymin, double ymax, 
+      double *U, double*V, int r, int n1, int n2){
+        Vector Vx(n1), Vy(n2);
+        for(int i=0;i<n1;i++) Vx(i) = X[i];
+        for(int i=0;i<n2;i++) Vy(i) = Y[i];
+        Matrix mU(n1,r), mS(r,r), mV(n2,r);
+        Compute_lowrank_1d(kfun, Vx, xmin, xmax, Vy, ymin, ymax, r, mU, mS, mV);
+        mU = mU*mS;
+        for(int i=0;i<mU.rows()*mU.cols();i++){
+          U[i] = mU(i);
+        }
+        for(int i=0;i<mV.rows()*mV.cols();i++){
+          V[i] = mV(i);
+        }
+}
+
+extern "C" void bbfmm2D(FUN2D kfun, double*X, double*Y, double *U, double*V, int r, int n1, int n2){
+        Matrix Vx(n1,2), Vy(n2,2);
+        for(int i=0;i<n1;i++) Vx(i,0) = X[i];
+        for(int i=0;i<n2;i++) Vy(i,0) = Y[i];
+        // std::cout << "Here " << std::endl;
+        for(int i=0;i<n1;i++) Vx(i,1) = X[i+n1];
+        for(int i=0;i<n2;i++) Vy(i,1) = Y[i+n2];
+        // std::cout << "Here " << std::endl;
+        Matrix mU(n1,r*r), mS(r*r,r*r), mV(n2,r*r);
+        // std::cout << "Here " << std::endl;
+        Compute_lowrank(kfun, Vx, Vy, r, mU, mS, mV);
+        // std::cout << "Here " << std::endl;
+        mU = mU*mS;
+        for(int i=0;i<mU.rows()*mU.cols();i++){
+          U[i] = mU(i);
+        }
+        for(int i=0;i<mV.rows()*mV.cols();i++){
+          V[i] = mV(i);
+        }
+        // std::cout << "Here " << std::endl;
+}
+
+double f2(double x, double y, double z, double w){
+  return 1.0/((x-z)*(x-z) + (y-w)*(y-w)+1.0);
 }
 
 int main(int argc, char *argv[]) {
@@ -212,7 +254,8 @@ int main(int argc, char *argv[]) {
 
   int r2 = r*r;
   Matrix U(n, r2), S(r2, r2), V(n, r2);
-  Compute_lowrank(K, X, Y, r, U, S, V);
+  // Compute_lowrank(K, X, Y, r, U, S, V);
+  Compute_lowrank(f2, X, Y, r, U, S, V);
 
   Matrix E = A - U*S*V.transpose();
 
