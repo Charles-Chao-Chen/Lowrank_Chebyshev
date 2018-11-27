@@ -6,6 +6,8 @@
 
 typedef Eigen::MatrixXd Matrix;
 typedef Eigen::VectorXd Vector;
+typedef double (*FUN1D)(double, double);
+typedef double (*FUN2D)(double, double,double, double);
 
 class Kernel {
 public:
@@ -172,15 +174,14 @@ const int r, Matrix &U, Matrix &S, Matrix &V) {
   Matrix chebA = IA.GetChebyshev();
   Matrix chebB = IB.GetChebyshev();
 
+  // std::cout << chebA << std::endl;
   int r2 = r*r;
   for (int i=0; i<r2; i++)
     for (int j=0; j<r2; j++)
-      S(j, i) = K( chebA(j,1), chebA(j,2), chebB(i,1), chebB(i,2) );
+      S(j, i) = K( chebA(j,0), chebA(j,1), chebB(i,0), chebB(i,1) );
 }
 
 /* Interface to Julia */
-typedef double (*FUN1D)(double, double);
-typedef double (*FUN2D)(double, double,double, double);
 
 extern "C" void bbfmm1D(FUN1D kfun, double*X, double*Y, double xmin, double xmax, double ymin, double ymax, 
       double *U, double*V, int r, int n1, int n2){
@@ -198,15 +199,18 @@ extern "C" void bbfmm1D(FUN1D kfun, double*X, double*Y, double xmin, double xmax
         }
 }
 
-extern "C" void bbfmm2D(FUN2D kfun, double*X, double*Y, double xmin, double xmax, double ymin, double ymax, 
-      double *U, double*V, int r, int n1, int n2){
+extern "C" void bbfmm2D(FUN2D kfun, double*X, double*Y, double *U, double*V, int r, int n1, int n2){
         Matrix Vx(n1,2), Vy(n2,2);
-        for(int i=0;i<n1;i++) Vx(i,1) = X[i];
-        for(int i=0;i<n2;i++) Vy(i,1) = Y[i];
-        for(int i=0;i<n1;i++) Vx(i,2) = X[i+n1];
-        for(int i=0;i<n2;i++) Vy(i,2) = Y[i+n2];
-        Matrix mU(n1,r), mS(r,r), mV(n2,r);
+        for(int i=0;i<n1;i++) Vx(i,0) = X[i];
+        for(int i=0;i<n2;i++) Vy(i,0) = Y[i];
+        // std::cout << "Here " << std::endl;
+        for(int i=0;i<n1;i++) Vx(i,1) = X[i+n1];
+        for(int i=0;i<n2;i++) Vy(i,1) = Y[i+n2];
+        // std::cout << "Here " << std::endl;
+        Matrix mU(n1,r*r), mS(r*r,r*r), mV(n2,r*r);
+        // std::cout << "Here " << std::endl;
         Compute_lowrank(kfun, Vx, Vy, r, mU, mS, mV);
+        // std::cout << "Here " << std::endl;
         mU = mU*mS;
         for(int i=0;i<mU.rows()*mU.cols();i++){
           U[i] = mU(i);
@@ -214,9 +218,12 @@ extern "C" void bbfmm2D(FUN2D kfun, double*X, double*Y, double xmin, double xmax
         for(int i=0;i<mV.rows()*mV.cols();i++){
           V[i] = mV(i);
         }
+        // std::cout << "Here " << std::endl;
 }
 
-
+double f2(double x, double y, double z, double w){
+  return 1.0/((x-z)*(x-z) + (y-w)*(y-w)+1.0);
+}
 
 int main(int argc, char *argv[]) {
 
@@ -247,7 +254,8 @@ int main(int argc, char *argv[]) {
 
   int r2 = r*r;
   Matrix U(n, r2), S(r2, r2), V(n, r2);
-  Compute_lowrank(K, X, Y, r, U, S, V);
+  // Compute_lowrank(K, X, Y, r, U, S, V);
+  Compute_lowrank(f2, X, Y, r, U, S, V);
 
   Matrix E = A - U*S*V.transpose();
 
